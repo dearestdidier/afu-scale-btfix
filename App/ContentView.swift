@@ -1,0 +1,373 @@
+import SwiftUI
+
+struct ContentView: View {
+    @EnvironmentObject private var scale: ScaleController
+    @FocusState private var focusedField: ProfileField?
+    @State private var showsRawData = false
+
+    private enum ProfileField {
+        case height, age
+    }
+
+    private enum Palette {
+        static let blue = Color(red: 0, green: 0.4, blue: 0.8)
+        static let ink = Color(red: 29 / 255, green: 29 / 255, blue: 31 / 255)
+        static let muted = Color(red: 122 / 255, green: 122 / 255, blue: 122 / 255)
+        static let parchment = Color(red: 245 / 255, green: 245 / 255, blue: 247 / 255)
+        static let dark = Color(red: 39 / 255, green: 39 / 255, blue: 41 / 255)
+        static let hairline = Color(red: 224 / 255, green: 224 / 255, blue: 224 / 255)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    header
+                    measurement
+                    profile
+                    history
+                    diagnostics
+                    footer
+                }
+            }
+            .background(Palette.parchment)
+            .foregroundStyle(Palette.ink)
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") { focusedField = nil }
+                        .foregroundStyle(Palette.blue)
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+        .tint(Palette.blue)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("AFU 体脂秤")
+                .font(.system(size: 34, weight: .semibold))
+                .tracking(-0.37)
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Palette.blue)
+                    .frame(width: 8, height: 8)
+                Text(scale.status)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Palette.muted)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 24)
+        .padding(.top, 24)
+        .padding(.bottom, 32)
+        .background(Palette.parchment)
+    }
+
+    private var measurement: some View {
+        VStack(spacing: 24) {
+            VStack(spacing: 4) {
+                Text("当前体重")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.75))
+
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(scale.latest.map { String(format: "%.2f", $0.weightKg) } ?? "— —")
+                        .font(.system(size: 56, weight: .semibold))
+                        .tracking(-0.28)
+                    Text("kg")
+                        .font(.system(size: 21, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.75))
+                }
+            }
+
+            if let measurement = scale.latest {
+                HStack(spacing: 24) {
+                    Label(measurement.isStable ? "已稳定" : "测量中", systemImage: measurement.isStable ? "checkmark.circle.fill" : "waveform")
+                    if let impedance = measurement.impedance {
+                        Label("\(impedance.a) Ω", systemImage: "bolt.fill")
+                    }
+                }
+                .font(.system(size: 14))
+                .foregroundStyle(Color.white.opacity(0.75))
+            } else {
+                Text("站上体脂秤后，测量结果会显示在这里。")
+                    .font(.system(size: 17))
+                    .foregroundStyle(Color.white.opacity(0.75))
+            }
+
+            // 完整身体成分卡片（来自 ant-afu-scale 的 BIA 估算）。
+            if let record = scale.records.first, let comp = record.composition {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    metric("体脂率", String(format: "%.1f%%", comp.bodyFatPercent))
+                    metric("水分率", String(format: "%.1f%%", comp.waterPercent))
+                    metric("肌肉率", String(format: "%.1f%%", comp.muscleRate))
+                    metric("基础代谢", "\(comp.bmr) kcal")
+                    metric("去脂体重", String(format: "%.1f kg", comp.leanBodyMassKg))
+                    metric("BMI", String(format: "%.1f", comp.bmi))
+                }
+                .padding(.top, 8)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 48)
+        .foregroundStyle(.white)
+        .background(Palette.dark)
+    }
+
+    private func metric(_ title: String, _ value: String) -> some View {
+        VStack(spacing: 4) {
+            Text(value).font(.title3).bold()
+            Text(title).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var profile: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("个人参数")
+                    .font(.system(size: 21, weight: .semibold))
+                    .tracking(-0.23)
+                Text("用于下发秤触发体脂测量，并计算 BMI 与身体成分，修改后会自动保存。")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Palette.muted)
+            }
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("身高")
+                        .font(.system(size: 14, weight: .semibold))
+                    HStack(spacing: 4) {
+                        TextField("172", value: $scale.profile.heightCm, format: .number.precision(.fractionLength(0...1)))
+                            .keyboardType(.decimalPad)
+                            .font(.system(size: 21, weight: .semibold))
+                            .multilineTextAlignment(.trailing)
+                            .focused($focusedField, equals: .height)
+                            .accessibilityLabel("身高")
+                        Text("cm")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Palette.muted)
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(height: 52)
+                    .background(.white)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(focusedField == .height ? Palette.blue : Palette.hairline, lineWidth: focusedField == .height ? 2 : 1))
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("年龄")
+                        .font(.system(size: 14, weight: .semibold))
+                    HStack(spacing: 4) {
+                        TextField("25", value: $scale.profile.age, format: .number)
+                            .keyboardType(.numberPad)
+                            .font(.system(size: 21, weight: .semibold))
+                            .multilineTextAlignment(.trailing)
+                            .focused($focusedField, equals: .age)
+                            .accessibilityLabel("年龄")
+                        Text("岁")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Palette.muted)
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(height: 52)
+                    .background(.white)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(focusedField == .age ? Palette.blue : Palette.hairline, lineWidth: focusedField == .age ? 2 : 1))
+                }
+            }
+
+            Picker("性别", selection: $scale.profile.isMale) {
+                Text("男").tag(true)
+                Text("女").tag(false)
+            }
+            .pickerStyle(.segmented)
+
+            Toggle("测量后自动写入「健康」", isOn: $scale.profile.autoSyncHealth)
+
+            HStack(spacing: 12) {
+                Image(systemName: "heart.text.square")
+                    .foregroundStyle(Palette.blue)
+                    .frame(width: 24)
+                Text(scale.lastSavedText)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Palette.muted)
+            }
+
+            writeSection
+        }
+        .padding(24)
+        .background(Palette.parchment)
+    }
+
+    /// 写入方式：Apple 健康（需授权）或快捷指令兑底（免费签名无 HealthKit 权限时）。
+    @ViewBuilder
+    private var writeSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("写入方式")
+                .font(.system(size: 14, weight: .semibold))
+
+            Picker("写入方式", selection: $scale.writeTarget) {
+                Text("Apple 健康").tag(ScaleController.WriteTarget.health)
+                Text("快捷指令").tag(ScaleController.WriteTarget.shortcut)
+            }
+            .pickerStyle(.segmented)
+            .disabled(scale.healthUnavailable)
+
+            if scale.healthUnavailable {
+                HStack(spacing: 8) {
+                    Text("当前签名不包含 HealthKit 权限，只能用快捷指令写入。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.muted)
+                    Button("重新检测") { scale.retryHealth() }
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.blue)
+                }
+            }
+        }
+
+        if scale.usesShortcut {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("测量结果交由名为「\(ScaleController.shortcutName)」的快捷指令写入 Apple 健康。")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Palette.muted)
+
+                if let url = scale.shortcutURL {
+                    Link(destination: url) {
+                        Text("通过快捷指令写入")
+                            .font(.system(size: 17))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 44)
+                    }
+                    .foregroundStyle(.white)
+                    .background(Palette.blue)
+                    .clipShape(Capsule())
+                    .accessibilityHint("在快捷指令 App 中写入本次测量结果")
+                } else {
+                    Text("先完成一次测量，这里会出现写入按钮。")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Palette.muted)
+                }
+            }
+        } else if scale.needsHealthAuthorization {
+            Button {
+                scale.requestHealthAuthorization()
+            } label: {
+                Text("允许写入 Apple 健康")
+                    .font(.system(size: 17))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
+            .background(Palette.blue)
+            .clipShape(Capsule())
+            .accessibilityHint("打开 Apple 健康授权请求")
+        }
+    }
+
+    private var history: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("写入记录")
+                .font(.system(size: 21, weight: .semibold))
+                .tracking(-0.23)
+                .padding(.bottom, 16)
+
+            if scale.records.isEmpty {
+                Text("还没有记录")
+                    .font(.system(size: 17))
+                    .foregroundStyle(Palette.muted)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 32)
+            } else {
+                ForEach(Array(scale.records.enumerated()), id: \.element.id) { index, record in
+                    recordRow(record)
+
+                    if index < scale.records.count - 1 {
+                        Divider()
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .background(.white)
+    }
+
+    private func recordRow(_ record: SavedRecord) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(String(format: "%.2f", record.weightKg))
+                        .font(.system(size: 28, weight: .semibold))
+                        .tracking(-0.26)
+                    Text("kg")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Palette.muted)
+                }
+
+                HStack(spacing: 8) {
+                    chip("BMI " + String(format: "%.1f", record.bmi))
+                    chip("体脂 " + (record.bodyFatPercent.map { String(format: "%.1f%%", $0) } ?? "—"))
+                    if let comp = record.composition {
+                        chip("肌肉 " + String(format: "%.1f%%", comp.muscleRate))
+                    }
+                }
+            }
+
+            Spacer(minLength: 12)
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(record.date.formatted(.dateTime.month(.abbreviated).day()))
+                    .font(.system(size: 14, weight: .semibold))
+                Text(record.date.formatted(date: .omitted, time: .shortened))
+                    .font(.system(size: 12))
+            }
+            .foregroundStyle(Palette.muted)
+        }
+        .padding(.vertical, 16)
+    }
+
+    private func chip(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(Palette.muted)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Palette.parchment)
+            .clipShape(Capsule())
+    }
+
+    @ViewBuilder
+    private var diagnostics: some View {
+        if !scale.latestRawHex.isEmpty {
+            DisclosureGroup("原始测量数据", isExpanded: $showsRawData) {
+                Text(scale.latestRawHex)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Palette.muted)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 12)
+            }
+            .font(.system(size: 14, weight: .semibold))
+            .padding(24)
+            .background(Palette.parchment)
+        }
+    }
+
+    private var footer: some View {
+        Text("首次使用请允许蓝牙与健康权限。之后 iOS 会在称重广播出现时通过蓝牙后台模式唤醒 App。")
+            .font(.system(size: 12))
+            .foregroundStyle(Palette.muted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 32)
+            .background(Palette.parchment)
+    }
+}
