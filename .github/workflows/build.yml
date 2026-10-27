@@ -7,14 +7,15 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-14
 
     steps:
     - uses: actions/checkout@v4
 
-    - uses: maxim-lobanov/setup-xcode@v1
-      with:
-        xcode-version: "15.0"
+    - name: Set up Xcode
+      run: |
+        sudo xcode-select -switch /Applications/Xcode.app/Contents/Developer
+        xcodebuild -version
 
     - name: Install XcodeGen
       run: brew install xcodegen
