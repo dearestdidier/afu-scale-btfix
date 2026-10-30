@@ -7,15 +7,10 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
-    - uses: actions/checkout@v6   # v4→v6，消除 Node20 deprecated 警告
-
-    - name: Select Xcode 15.4
-      uses: maxim-lobanov/setup-xcode@v1
-      with:
-        xcode-version: '15.4'    # 不要写 '15.0'，runner 上没有；15.4 是 macos-14 自带的
+    - uses: actions/checkout@v6
 
     - name: Verify Xcode
       run: xcodebuild -version
@@ -26,7 +21,7 @@ jobs:
     - name: Generate Xcode project
       run: xcodegen generate
 
-    - name: Archive
+    - name: Archive (ad-hoc signed, entitlements embedded)
       run: |
         xcodebuild archive \
           -scheme AFUScale \
@@ -34,9 +29,23 @@ jobs:
           -configuration Release \
           -destination "generic/platform=iOS" \
           -archivePath AFUScale.xcarchive \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGN_IDENTITY="-" \
+          CODE_SIGN_STYLE=Manual \
+          CODE_SIGNING_REQUIRED=YES \
+          CODE_SIGNING_ALLOWED=YES \
+          CODE_SIGN_ENTITLEMENTS="App/AFUScale.entitlements" \
+          PROVISIONING_PROFILE_SPECIFIER=""
+
+    - name: Verify entitlements embedded
+      run: |
+        APP="AFUScale.xcarchive/Products/Applications/AFUScale.app"
+        echo "== 已嵌入的 entitlements =="
+        codesign -d --entitlements :- "$APP" 2>/dev/null || true
+        echo ""
+        echo "== 校验 com.apple.developer.healthkit =="
+        codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q "com.apple.developer.healthkit" \
+          && echo "OK: healthkit entitlement 已嵌入" \
+          || (echo "FAIL: healthkit entitlement 缺失"; exit 1)
 
     - name: Export IPA
       run: |
@@ -58,11 +67,11 @@ jobs:
           -archivePath AFUScale.xcarchive \
           -exportPath . \
           -exportOptionsPlist "$EXPORT_PLIST" \
-          CODE_SIGN_IDENTITY="" \
+          CODE_SIGN_IDENTITY="-" \
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO
 
-    - uses: actions/upload-artifact@v5   # v4→v5，同样消除 Node20 警告
+    - uses: actions/upload-artifact@v5
       with:
         name: AFUScale
         path: AFUScale.ipa
