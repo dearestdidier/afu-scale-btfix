@@ -2,7 +2,7 @@
 
 <img src="Scale/Assets.xcassets/AppIcon.appiconset/Scale_1024.png" width="128" alt="Scale App Icon" />
 
-# Scale · 蚂蚁阿福体脂秤
+# Scale · 蚂蚁阿福体脂秤！
 
 一个原生 iOS App，通过蓝牙连接蚂蚁阿福体脂秤，读取体重与阻抗，本地估算身体成分，并同步到 Apple「健康」。
 
