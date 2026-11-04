@@ -45,17 +45,29 @@ jobs:
     # 从而让 HealthKit 授权开关在无付费证书的情况下正常弹出。
     - name: Inject HealthKit entitlement via ldid & package IPA
       run: |
+        set -e
         rm -rf Payload
         mkdir Payload
         cp -R AFUScale.xcarchive/Products/Applications/AFUScale.app Payload/
         APP="Payload/AFUScale.app"
         BIN="$APP/AFUScale"
 
+        # 确认 entitlements 源文件存在且是有效 plist
+        echo "== entitlements 源文件 =="
+        ls -l "$PWD/App/AFUScale.entitlements"
+        plutil -lint "$PWD/App/AFUScale.entitlements"
+
+        # 关键修复：ldid 内置 plist 解析器对带 <!DOCTYPE> 外部 DTD 的 XML 解析不稳，
+        # 会返回 NULL 触发 "plist != NULL"。转成 ldid 原生支持的二进制 plist 彻底规避。
+        plutil -convert binary1 -o "$PWD/afu-ent.bin" "$PWD/App/AFUScale.entitlements"
+        echo "== 转换后的二进制 entitlements =="
+        ls -l "$PWD/afu-ent.bin"
+
         echo "== 注入前 entitlements =="
         codesign -d --entitlements :- "$BIN" 2>/dev/null || echo "(无签名)"
 
-        echo "== 写入 healthkit entitlement =="
-        ldid -SApp/AFUScale.entitlements "$BIN"
+        echo "== 用 ldid 写入 healthkit entitlement =="
+        ldid -S"$PWD/afu-ent.bin" "$BIN"
 
         echo "== 注入后 entitlements =="
         codesign -d --entitlements :- "$BIN" 2>/dev/null || echo "(ldid 已 fakesign)"
@@ -65,10 +77,16 @@ jobs:
         zip -qr AFUScale.ipa Payload
 
     # 最终校验：确认 healthkit entitlement 真的进了 IPA 内的二进制。
+    # 优先用 ldid -e 读取（ldid 签名的二进制用 ldid 自身 dump 最准确），
+    # 失败再回退到 codesign。
     - name: Verify HealthKit entitlement in IPA
       run: |
-        unzip -p AFUScale.ipa "Payload/AFUScale.app/AFUScale" > /tmp/AFUScale.bin 2>/dev/null || true
-        codesign -d --entitlements :- /tmp/AFUScale.bin 2>/dev/null | grep -q "com.apple.developer.healthkit" \
+        rm -rf /tmp/verify && mkdir -p /tmp/verify
+        unzip -o -q AFUScale.ipa -d /tmp/verify
+        BIN="/tmp/verify/Payload/AFUScale.app/AFUScale"
+        echo "== IPA 内二进制 entitlements =="
+        (ldid -e "$BIN" 2>/dev/null || codesign -d --entitlements :- "$BIN" 2>/dev/null) || true
+        (ldid -e "$BIN" 2>/dev/null || codesign -d --entitlements :- "$BIN" 2>/dev/null) | grep -q "com.apple.developer.healthkit" \
           && echo "OK: healthkit entitlement 已嵌入 IPA" \
           || (echo "FAIL: healthkit entitlement 缺失"; exit 1)
 
