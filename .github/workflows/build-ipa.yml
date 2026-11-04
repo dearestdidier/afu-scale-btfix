@@ -2,11 +2,12 @@
 #  ant-afu-scale · 自动出包（编译检查 + 归档导出 IPA + 发布 Release）
 # -----------------------------------------------------------------------------
 #  两个 job：
-#   1) compile-check : 仅 PR 触发，验证代码能编译（不需要签名证书）
+#   1) compile-check : PR / push 到 main / 手动触发，验证代码能编译（不需要签名）
 #   2) build-ipa     : 打 tag（v*）/ 手动触发 / push 到 main,master 时触发
 #                       · 已配置签名 Secrets → 完整 签名 → 归档 → 导出 IPA → 发布
 #                       · 未配置签名 Secrets → 退化为「仅编译验证」，不产出 IPA
-#                         （这样即使没配证书，job 也不会被 skip 或硬失败）
+#                         （注意：GitHub 禁止在 if: 里引用 secrets，故用 step
+#                          output 在 if: 中判断，secrets 仅通过 env: 注入）
 #
 #  出包（produce 一个签名 IPA）需要你在本仓库 Settings → Secrets 中配置以下密钥：
 #    P12_BASE64                  : 发布证书 .p12 的 base64（openssl base64 -in cert.p12）
@@ -48,10 +49,13 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1) 编译检查：不需要任何签名，验证代码可编译（仅 PR 触发）
+  # 1) 编译检查：不需要任何签名，验证代码可编译
   # ---------------------------------------------------------------------------
   compile-check:
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/'))
     # 注：macos-15 为 arm64 托管 runner，GitHub 在高峰期可能排队较久（容量提示，非错误）。
     runs-on: macos-15
     steps:
@@ -102,9 +106,24 @@ jobs:
       - name: List schemes (调试用)
         run: xcodebuild -list -project Scale.xcodeproj
 
+      # ===== 检测是否已配置签名 Secrets（secrets 仅经 env 注入，不在 if: 中引用）=====
+      - name: 检测签名 Secrets 是否就绪
+        id: detect
+        env:
+          P12_BASE64: ${{ secrets.P12_BASE64 }}
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          if [ -n "$P12_BASE64" ] && [ -n "$PROVISIONING_PROFILE_BASE64" ]; then
+            echo "signing_ready=true" >> "$GITHUB_OUTPUT"
+            echo "✅ 已检测到签名 Secrets，将执行完整归档 + 导出 IPA"
+          else
+            echo "signing_ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置签名 Secrets（P12_BASE64 / PROVISIONING_PROFILE_BASE64 缺失），本次仅做编译验证，不产出 IPA。需在仓库 Settings → Secrets 配置 8 个密钥后才能出包。"
+          fi
+
       # ===== 以下 4 步仅在已配置签名 Secrets 时执行 =====
       - name: Install Apple certificate & provisioning profile
-        if: ${{ secrets.P12_BASE64 != '' && secrets.PROVISIONING_PROFILE_BASE64 != '' }}
+        if: steps.detect.outputs.signing_ready == 'true'
         env:
           P12_BASE64: ${{ secrets.P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
@@ -123,7 +142,7 @@ jobs:
           echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$HOME/Library/MobileDevice/Provisioning Profiles/profile.mobileprovision"
 
       - name: Generate ExportOptions.plist
-        if: ${{ secrets.P12_BASE64 != '' && secrets.PROVISIONING_PROFILE_BASE64 != '' }}
+        if: steps.detect.outputs.signing_ready == 'true'
         env:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
@@ -159,7 +178,7 @@ jobs:
           cat ExportOptions.plist
 
       - name: Archive (signed)
-        if: ${{ secrets.P12_BASE64 != '' && secrets.PROVISIONING_PROFILE_BASE64 != '' }}
+        if: steps.detect.outputs.signing_ready == 'true'
         env:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
@@ -179,7 +198,7 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME"
 
       - name: Export IPA
-        if: ${{ secrets.P12_BASE64 != '' && secrets.PROVISIONING_PROFILE_BASE64 != '' }}
+        if: steps.detect.outputs.signing_ready == 'true'
         run: |
           xcodebuild -exportArchive \
             -archivePath "$PWD/build/ScaleApp.xcarchive" \
@@ -190,7 +209,7 @@ jobs:
 
       # ===== 未配置签名 Secrets 时的退化步骤（保证 job 不 skip / 不硬失败）=====
       - name: Build only (no signing)
-        if: ${{ secrets.P12_BASE64 == '' || secrets.PROVISIONING_PROFILE_BASE64 == '' }}
+        if: steps.detect.outputs.signing_ready == 'false'
         run: |
           echo "::notice::未检测到签名 Secrets（P12_BASE64 / PROVISIONING_PROFILE_BASE64），跳过归档/导出，仅做编译验证。"
           echo "如需产出签名 IPA，请在仓库 Settings → Secrets 配置 8 个密钥后，打 tag（v*）或手动触发本 workflow 重试。"
@@ -203,14 +222,16 @@ jobs:
             CODE_SIGNING_ALLOWED=NO
 
       - name: Upload IPA artifact
-        if: ${{ secrets.P12_BASE64 != '' && secrets.PROVISIONING_PROFILE_BASE64 != '' }}
+        if: steps.detect.outputs.signing_ready == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: ScaleApp-ipa
           path: build/ipa/*.ipa
 
       - name: Publish GitHub Release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.P12_BASE64 != '' }}
+        if: >-
+          startsWith(github.ref, 'refs/tags/v') &&
+          steps.detect.outputs.signing_ready == 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: build/ipa/*.ipa
