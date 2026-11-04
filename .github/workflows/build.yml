@@ -15,17 +15,24 @@ jobs:
     - name: Verify Xcode
       run: xcodebuild -version
 
-    - name: Install XcodeGen and ldid
-      run: |
-        brew install xcodegen
-        brew install ldid
+    - name: Install XcodeGen
+      run: brew install xcodegen
 
     - name: Generate Xcode project
       run: xcodegen generate
 
     # 归档阶段彻底无签名（CODE_SIGNING_ALLOWED=NO）。
-    # 这里不嵌 entitlements，交由后面的 ldid fakesign 步骤完成，避免 xcodebuild
-    # 的 ad-hoc 签名与工程配置冲突（之前 exit code 65 的原因）。
+    #
+    # 重要说明（踩坑记录）：本项目走 TrollStore 免签安装。受保护的
+    # com.apple.developer.healthkit 这种 entitlement 在免签下无法被系统授权，
+    # 一旦注入二进制，iOS 启动时会因 "Unsatisfied entitlements" 直接 SIGKILL 闪退。
+    # 因此这里【不注入任何受保护 entitlement】。HealthKit 的数据写入由 App 内的
+    # 快捷指令兜底逻辑处理（HealthWriter 授权失败自动降级到 useShortcut()），
+    # 这正是本项目在 TrollStore 免签场景下的正确用法。
+    #
+    # 若要 HealthKit 真正弹开关并写入苹果健康，必须改用真签名
+    # （免费/付费 Apple 开发者账号 + App ID 开启 HealthKit + provisioning profile），
+    # 那需要在 workflow 里配置证书/描述文件 secrets，已超出 TrollStore 免签范围。
     - name: Archive (unsigned)
       run: |
         xcodebuild archive \
@@ -38,57 +45,22 @@ jobs:
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO
 
-    # 不用 xcodebuild -exportArchive（它会因 method=development 强制要求 teamID 非空而报错）。
-    # 这里直接从 .xcarchive 里取出 .app，用 ldid 做 fakesign 注入 healthkit entitlement，
-    # 再手动打包成 Payload/*.app 结构重命名为 .ipa —— TrollStore 场景下最可控的做法。
-    # TrollStore 安装时用假根证书重签会「原样保留」二进制里已有的 entitlements，
-    # 从而让 HealthKit 授权开关在无付费证书的情况下正常弹出。
-    - name: Inject HealthKit entitlement via ldid & package IPA
+    # 从 .xcarchive 取出 .app，直接打包成 IPA（Payload/*.app 结构）。
+    # 不调用 xcodebuild -exportArchive（它会因 method=development 强制要求 teamID 非空而报错），
+    # 也不注入受保护 entitlement（避免闪退）。TrollStore 安装时会用 CoreTrust 漏洞自行签名。
+    - name: Package IPA
       run: |
-        set -e
         rm -rf Payload
         mkdir Payload
         cp -R AFUScale.xcarchive/Products/Applications/AFUScale.app Payload/
-        APP="Payload/AFUScale.app"
-        BIN="$APP/AFUScale"
-
-        # 确认 entitlements 源文件存在且是有效 plist
-        echo "== entitlements 源文件 =="
-        ls -l "$PWD/App/AFUScale.entitlements"
-        plutil -lint "$PWD/App/AFUScale.entitlements"
-
-        # 关键修复：ldid 内置 plist 解析器对带 <!DOCTYPE> 外部 DTD 的 XML 解析不稳，
-        # 会返回 NULL 触发 "plist != NULL"。转成 ldid 原生支持的二进制 plist 彻底规避。
-        plutil -convert binary1 -o "$PWD/afu-ent.bin" "$PWD/App/AFUScale.entitlements"
-        echo "== 转换后的二进制 entitlements =="
-        ls -l "$PWD/afu-ent.bin"
-
-        echo "== 注入前 entitlements =="
-        codesign -d --entitlements :- "$BIN" 2>/dev/null || echo "(无签名)"
-
-        echo "== 用 ldid 写入 healthkit entitlement =="
-        ldid -S"$PWD/afu-ent.bin" "$BIN"
-
-        echo "== 注入后 entitlements =="
-        codesign -d --entitlements :- "$BIN" 2>/dev/null || echo "(ldid 已 fakesign)"
-
-        # 打包成 IPA（Payload 目录 zip 后改名 .ipa）
         rm -f AFUScale.ipa
         zip -qr AFUScale.ipa Payload
 
-    # 最终校验：确认 healthkit entitlement 真的进了 IPA 内的二进制。
-    # 优先用 ldid -e 读取（ldid 签名的二进制用 ldid 自身 dump 最准确），
-    # 失败再回退到 codesign。
-    - name: Verify HealthKit entitlement in IPA
+    - name: Verify IPA structure
       run: |
-        rm -rf /tmp/verify && mkdir -p /tmp/verify
-        unzip -o -q AFUScale.ipa -d /tmp/verify
-        BIN="/tmp/verify/Payload/AFUScale.app/AFUScale"
-        echo "== IPA 内二进制 entitlements =="
-        (ldid -e "$BIN" 2>/dev/null || codesign -d --entitlements :- "$BIN" 2>/dev/null) || true
-        (ldid -e "$BIN" 2>/dev/null || codesign -d --entitlements :- "$BIN" 2>/dev/null) | grep -q "com.apple.developer.healthkit" \
-          && echo "OK: healthkit entitlement 已嵌入 IPA" \
-          || (echo "FAIL: healthkit entitlement 缺失"; exit 1)
+        echo "== IPA 内容 =="
+        unzip -l AFUScale.ipa
+        test -f Payload/AFUScale.app/AFUScale && echo "OK: 二进制存在" || (echo "FAIL: 二进制缺失"; exit 1)
 
     - uses: actions/upload-artifact@v5   # v4→v5，同样消除 Node20 警告
       with:
