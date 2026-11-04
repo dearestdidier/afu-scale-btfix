@@ -38,35 +38,12 @@ jobs:
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO
 
-    # 导出无签名 IPA。
-    - name: Export IPA (unsigned)
-      run: |
-        EXPORT_PLIST=$(mktemp)
-        cat > "$EXPORT_PLIST" <<'PLIST'
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-          <key>method</key><string>development</string>
-          <key>signingStyle</key><string>manual</string>
-          <key>teamID</key><string></string>
-          <key>provisioningProfiles</key><dict/>
-        </dict>
-        </plist>
-        PLIST
-
-        xcodebuild -exportArchive \
-          -archivePath AFUScale.xcarchive \
-          -exportPath . \
-          -exportOptionsPlist "$EXPORT_PLIST" \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO
-
-    # 用 ldid 给二进制做 fakesign，把 healthkit entitlement 显式注入代码签名。
+    # 不用 xcodebuild -exportArchive（它会因 method=development 强制要求 teamID 非空而报错）。
+    # 这里直接从 .xcarchive 里取出 .app，用 ldid 做 fakesign 注入 healthkit entitlement，
+    # 再手动打包成 Payload/*.app 结构重命名为 .ipa —— TrollStore 场景下最可控的做法。
     # TrollStore 安装时用假根证书重签会「原样保留」二进制里已有的 entitlements，
     # 从而让 HealthKit 授权开关在无付费证书的情况下正常弹出。
-    - name: Inject HealthKit entitlement via ldid
+    - name: Inject HealthKit entitlement via ldid & package IPA
       run: |
         rm -rf Payload
         mkdir Payload
@@ -83,18 +60,13 @@ jobs:
         echo "== 注入后 entitlements =="
         codesign -d --entitlements :- "$BIN" 2>/dev/null || echo "(ldid 已 fakesign)"
 
-        # 重新打包成 IPA
+        # 打包成 IPA（Payload 目录 zip 后改名 .ipa）
         rm -f AFUScale.ipa
         zip -qr AFUScale.ipa Payload
 
-    # 最终校验：确认 healthkit entitlement 真的进了二进制。
-    - name: Verify HealthKit entitlement
+    # 最终校验：确认 healthkit entitlement 真的进了 IPA 内的二进制。
+    - name: Verify HealthKit entitlement in IPA
       run: |
-        APP="AFUScale.xcarchive/Products/Applications/AFUScale.app/AFUScale"
-        echo "== 归档产物校验 =="
-        codesign -d --entitlements :- "$APP" 2>/dev/null || true
-        echo ""
-        echo "== IPA 内二进制校验 =="
         unzip -p AFUScale.ipa "Payload/AFUScale.app/AFUScale" > /tmp/AFUScale.bin 2>/dev/null || true
         codesign -d --entitlements :- /tmp/AFUScale.bin 2>/dev/null | grep -q "com.apple.developer.healthkit" \
           && echo "OK: healthkit entitlement 已嵌入 IPA" \
